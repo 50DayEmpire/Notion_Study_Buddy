@@ -8,6 +8,7 @@ from mcp.client.streamable_http import streamable_http_client
 from auth_service import authFlow, refresh_access_token
 from auth_utils import load_client_config
 import json
+from google import genai
 
 class NotionStreamableClient:
     def __init__(self, access_token: str, serverUrl: str, useSSE: bool = False):
@@ -19,6 +20,8 @@ class NotionStreamableClient:
             "User-Agent": "Notion AI Study Buddy/1.0",
             "Accept": "application/json, text/event-stream"    #Revisar si hay que aceptar mas formatos
         }
+        self.client = genai.Client()
+        self.chat = self.client.chats.create(model="gemini-3-flash-preview")
 
     async def connect_streamable(self):
         """
@@ -34,10 +37,55 @@ class NotionStreamableClient:
                     await session.initialize()
                     response = await session.list_tools()
                     print(f"✅ ¡Conexión Exitosa con Streams!")
-                    tool_names = [t.name for t in response.tools]
-                    print(f"Herramientas: {tool_names}")
-                    return tool_names
+                    tools = response.tools
+                    
+                    # 2. Bucle de interacción con el usuario
+                    while True:
+                        query = input("\nInteractúa con tu Study Buddy (o 'salir'): ")
+                        if query.lower() in ['salir', 'exit', 'quit']: break
 
+                        await self.process_query(session, tools, query)
+
+    async def process_query(self, session, mcp_tools, user_input):
+        """
+        Orquesta la comunicación entre Gemini y las herramientas de Notion.
+        """
+        
+        prompt = f"""
+        Eres un Notion AI Study Buddy. Tienes acceso a estas herramientas de Notion:
+        {mcp_tools}
+        
+        Pregunta del usuario: {user_input}
+        
+        Si necesitas usar una herramienta, responde SOLO con un JSON: 
+        {{"tool": "nombre_herramienta", "args": {{"param": "valor"}}}}
+        Si no la necesitas, responde directamente al usuario.
+        """
+
+        response = self.chat.send_message(prompt)
+        text = response.text.strip()
+
+        # Lógica básica de despacho de herramientas
+        if '"tool":' in text:
+            try:
+                # Extraer JSON de la respuesta (Gemini a veces pone markdown)
+                clean_json = text.replace("```json", "").replace("```", "").strip()
+                call_data = json.loads(clean_json)
+                
+                print(f"🛠️ Usando herramienta: {call_data['tool']}...")
+                
+                # Ejecutar herramienta en el servidor MCP
+                result = await session.call_tool(call_data['tool'], call_data['args'])
+                
+                # Enviar el resultado de la herramienta de vuelta a Gemini para la respuesta final
+                final_prompt = f"El resultado de la herramienta {call_data['tool']} fue: {result.content}. Responde al usuario basándote en esto."
+                final_res = self.chat.send_message(final_prompt)
+                print(f"\n🤖 Study Buddy: {final_res.text}")
+                
+            except Exception as e:
+                print(f"❌ Error al procesar herramienta: {e}")
+        else:
+            print(f"\n🤖 Study Buddy: {text}")
 
 async def _safe_response_text(response: httpx.Response | None) -> str:
     if response is None:
