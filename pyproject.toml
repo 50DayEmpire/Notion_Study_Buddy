@@ -1,0 +1,12 @@
+[project]
+name = "mcp-client"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "authlib>=1.6.9",
+    "google-genai>=1.68.0",
+    "mcp>=1.26.0",
+    "python-dotenv>=1.2.2",
+]
