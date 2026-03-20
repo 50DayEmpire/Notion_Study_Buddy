@@ -9,8 +9,13 @@ from auth_service import authFlow, refresh_access_token
 from auth_utils import load_client_config
 import json
 from google import genai
+import logging
+
+logging.basicConfig(filename="mcp_client.log", filemode='w', format='%(asctime)s - %(levelname)s - %(message)s', level=logging.DEBUG)
 
 class NotionStreamableClient:
+    MAX_TOOL_CALLS_PER_TURN = 6
+
     def __init__(self, access_token: str, serverUrl: str, useSSE: bool = False):
         self.access_token = access_token
         self.serverUrl = serverUrl
@@ -21,7 +26,28 @@ class NotionStreamableClient:
             "Accept": "application/json, text/event-stream"    #Revisar si hay que aceptar mas formatos
         }
         self.client = genai.Client()
-        self.chat = self.client.chats.create(model="gemini-3-flash-preview")
+        self.chat = self.client.chats.create(model="gemini-2.5-flash-lite")
+
+    @staticmethod
+    def _extract_json_payload(raw_text: str) -> dict | None:
+        cleaned_text = raw_text.replace("```json", "").replace("```", "").strip()
+
+        try:
+            parsed = json.loads(cleaned_text)
+            return parsed if isinstance(parsed, dict) else None
+        except json.JSONDecodeError:
+            pass
+
+        start = cleaned_text.find("{")
+        end = cleaned_text.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            return None
+
+        try:
+            parsed = json.loads(cleaned_text[start : end + 1])
+            return parsed if isinstance(parsed, dict) else None
+        except json.JSONDecodeError:
+            return None
 
     async def connect_streamable(self):
         """
@@ -36,6 +62,7 @@ class NotionStreamableClient:
                 async with ClientSession(read_stream, write_stream) as session:
                     await session.initialize()
                     response = await session.list_tools()
+                    logging.debug(f"Respuesta de list_tools: {response}")
                     print(f"✅ ¡Conexión Exitosa con Streams!")
                     tools = response.tools
                     
@@ -50,42 +77,102 @@ class NotionStreamableClient:
         """
         Orquesta la comunicación entre Gemini y las herramientas de Notion.
         """
-        
-        prompt = f"""
-        Eres un Notion AI Study Buddy. Tienes acceso a estas herramientas de Notion:
-        {mcp_tools}
-        
+        tool_calls_used = 0
+        tool_history = []
+
+        step_prompt = f"""
+        Eres un Notion AI Study Buddy con acceso a herramientas MCP.
+        Herramientas disponibles (usa exactamente estos nombres): {mcp_tools}
+
         Pregunta del usuario: {user_input}
-        
-        Si necesitas usar una herramienta, responde SOLO con un JSON: 
-        {{"tool": "nombre_herramienta", "args": {{"param": "valor"}}}}
-        Si no la necesitas, responde directamente al usuario.
+
+        Debes responder SIEMPRE con JSON válido en uno de estos formatos:
+        1) Para usar herramienta:
+        {{"type": "tool_call", "tool": "nombre_herramienta", "args": {{"param": "valor"}}}}
+        2) Para responder al usuario:
+        {{"type": "final", "answer": "tu respuesta final"}}
+
+        Si te falta información, prefiere tool_call.
         """
 
-        response = self.chat.send_message(prompt)
-        text = response.text.strip()
+        while True:
+            response = await asyncio.to_thread(self.chat.send_message, step_prompt)
+            logging.debug(f"Respuesta bruta del modelo: {response.text}")
+            raw_text = (response.text or "").strip()
+            payload = self._extract_json_payload(raw_text)
+            logging.debug(f"Payload extraído: {payload}")
 
-        # Lógica básica de despacho de herramientas
-        if '"tool":' in text:
+            if payload is None:
+                print(f"\n🤖 Study Buddy: {raw_text}")
+                return
+
+            response_type = payload.get("type")
+            if response_type == "final":
+                final_answer = payload.get("answer")
+                if isinstance(final_answer, str) and final_answer.strip():
+                    print(f"\n🤖 Study Buddy: {final_answer.strip()}")
+                    return
+                print("❌ Respuesta final inválida del modelo (falta 'answer').")
+                return
+
+            if response_type != "tool_call":
+                print(f"\n🤖 Study Buddy: {raw_text}")
+                return
+
+            if tool_calls_used >= self.MAX_TOOL_CALLS_PER_TURN:
+                force_final_prompt = f"""
+                Alcanzaste el límite de {self.MAX_TOOL_CALLS_PER_TURN} herramientas en este turno.
+                Historial de herramientas usadas: {tool_history}
+                Responde SOLO con JSON final:
+                {{"type": "final", "answer": "..."}}
+                """
+                final_response = await asyncio.to_thread(self.chat.send_message, force_final_prompt)
+                final_text = (final_response.text or "").strip()
+                final_payload = self._extract_json_payload(final_text)
+                if final_payload and final_payload.get("type") == "final" and isinstance(final_payload.get("answer"), str):
+                    print(f"\n🤖 Study Buddy: {final_payload['answer'].strip()}")
+                else:
+                    print(f"\n🤖 Study Buddy: {final_text}")
+                return
+
+            tool_name = payload.get("tool")
+            tool_args = payload.get("args", {})
+
+            # if not isinstance(tool_name, str) or tool_name not in tool_names:
+            #     print(f"❌ Herramienta no permitida o inexistente: {tool_name}")
+            #     return
+
+            # if not isinstance(tool_args, dict):
+            #     print("❌ Argumentos inválidos para tool_call (deben ser un objeto JSON).")
+            #     return
+
             try:
-                # Extraer JSON de la respuesta (Gemini a veces pone markdown)
-                clean_json = text.replace("```json", "").replace("```", "").strip()
-                call_data = json.loads(clean_json)
-                
-                print(f"🛠️ Usando herramienta: {call_data['tool']}...")
-                
-                # Ejecutar herramienta en el servidor MCP
-                result = await session.call_tool(call_data['tool'], call_data['args'])
-                
-                # Enviar el resultado de la herramienta de vuelta a Gemini para la respuesta final
-                final_prompt = f"El resultado de la herramienta {call_data['tool']} fue: {result.content}. Responde al usuario basándote en esto."
-                final_res = self.chat.send_message(final_prompt)
-                print(f"\n🤖 Study Buddy: {final_res.text}")
-                
+                print(f"🛠️ Usando herramienta ({tool_calls_used + 1}/{self.MAX_TOOL_CALLS_PER_TURN}): {tool_name}...")
+                result = await session.call_tool(tool_name, tool_args)
+                logging.debug(f"Resultado de la herramienta '{tool_name}': {result.content}")
+                tool_calls_used += 1
+                tool_history.append({
+                    "tool": tool_name,
+                    "args": tool_args,
+                    "result": str(result.content),
+                })
             except Exception as e:
-                print(f"❌ Error al procesar herramienta: {e}")
-        else:
-            print(f"\n🤖 Study Buddy: {text}")
+                print(f"❌ Error al ejecutar herramienta {tool_name}: {e}")
+                return
+
+            step_prompt = f"""
+            Pregunta original del usuario: {user_input}
+
+            Historial de herramientas ejecutadas hasta ahora:
+            {tool_history}
+
+            Puedes hacer otra llamada de herramienta o responder final.
+            Herramientas disponibles: {mcp_tools}
+
+            Responde SIEMPRE con JSON válido:
+            - {{"type": "tool_call", "tool": "nombre_herramienta", "args": {{...}}}}
+            - {{"type": "final", "answer": "..."}}
+            """
 
 async def _safe_response_text(response: httpx.Response | None) -> str:
     if response is None:

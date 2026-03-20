@@ -19,3 +19,6 @@ client_tokens.json
 
 #vscode settings
 .vscode/
+
+#logs
+*.log
