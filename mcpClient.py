@@ -254,6 +254,7 @@ def _extract_unauthorized_from_group(group_error: ExceptionGroup) -> httpx.HTTPS
 
 # --- Lógica de ejecución ---
 async def run_bot_connection():
+    load_dotenv()  # Carga las variables de entorno desde el archivo .env
 
     TOKEN_PATH  = "client_tokens.json"
 
@@ -303,5 +304,4 @@ async def run_bot_connection():
         # hacer el fallback a /sse si este falla.
 
 if __name__ == "__main__":
-    load_dotenv()  # Carga las variables de entorno desde el archivo .env
     asyncio.run(run_bot_connection())
