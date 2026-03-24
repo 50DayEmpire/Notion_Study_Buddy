@@ -40,7 +40,7 @@ class NotionStreamableClient:
             "Accept": "application/json, text/event-stream"  
         }
         self.endpoint = "https://api.vultrinference.com/v1/chat/completions"
-        self.model = "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B"
+        self.model = "deepseek-ai/DeepSeek-R1-Distill-Llama-70B"
 
     @staticmethod
     def _extract_json_payload(raw_text: str) -> dict | None:
@@ -68,6 +68,21 @@ class NotionStreamableClient:
 
         return None
 
+    # @staticmethod
+    # def _build_tool_specs(mcp_tools) -> list[dict]:
+    #     tool_specs = []
+    #     logging.debug(f"Construyendo especificaciones de herramientas para: {[getattr(tool, 'name', None) for tool in mcp_tools]}")
+    #     for tool in mcp_tools:
+    #         tool_specs.append(
+    #             {
+    #                 "name": getattr(tool, "name", None),
+    #                 "description": getattr(tool, "description", ""),
+    #                 "inputSchema": getattr(tool, "inputSchema", None) or getattr(tool, "input_schema", None),
+    #             }
+    #         )
+    #     logging.debug(f"Especificaciones de herramientas construidas: {tool_specs}")
+    #     return tool_specs
+
     @staticmethod
     def _build_tool_specs(mcp_tools) -> list[dict]:
         tool_specs = []
@@ -76,8 +91,9 @@ class NotionStreamableClient:
             tool_specs.append(
                 {
                     "name": getattr(tool, "name", None),
+                    "title": getattr(tool, "title", None),
                     "description": getattr(tool, "description", ""),
-                    "inputSchema": getattr(tool, "inputSchema", None) or getattr(tool, "input_schema", None),
+                    "inputSchema": getattr(tool, "inputSchema", None) or getattr(tool, "input_schema", None)
                 }
             )
         logging.debug(f"Especificaciones de herramientas construidas: {tool_specs}")
@@ -119,6 +135,9 @@ class NotionStreamableClient:
 
         system_prompt = f"""
         Eres un Notion AI Study Buddy con acceso a herramientas MCP.
+        Cuando el usuario te solicite algo relacionado con notion haz un plan con las herramientas necesarias para cumplir su solicitud.
+        Si recibes un resultado de error de una herramienta revisa el inputSchema y la descripcion de esa herramienta para corregir tu llamado en el próximo intento.
+        Si recibes un error de herramienta no encontrada revisa el nombre correcto en tool_specs y corrige tu llamado en el próximo intento.
         Herramientas disponibles (JSON estructurado): {tool_specs_json}
         Debes responder SIEMPRE con JSON válido en uno de estos formatos:
         1) Para usar herramienta:
@@ -144,8 +163,8 @@ class NotionStreamableClient:
 
         while True:
             async with httpx.AsyncClient(headers=vultrHeaders, timeout=httpx.Timeout(40.0, read=None)) as http_client:
-                raw_text = await self.realizar_peticion(http_client, peticion)
-                self.mensajes.append(messageDto(role="assistant", content=raw_text))
+                raw_text, content = await self.realizar_peticion(http_client, peticion)
+                self.mensajes.append(messageDto(role="assistant", content=content))
                 payload = self._extract_json_payload(raw_text)
                 logging.debug(f"Payload extraído: {payload}")
 
@@ -178,9 +197,9 @@ class NotionStreamableClient:
                         model=self.model,
                         messages=self.mensajes
                     )
-                    final_text = await self.realizar_peticion(http_client, peticion)
+                    final_text, final_content = await self.realizar_peticion(http_client, peticion)
                     final_payload = self._extract_json_payload(final_text)
-                    self.mensajes.append(messageDto(role="assistant", content=final_text))
+                    self.mensajes.append(messageDto(role="assistant", content=final_content))
                     if final_payload and final_payload.get("type") == "final" and isinstance(final_payload.get("answer"), str):
                         print(f"\n🤖 Study Buddy: {final_payload['answer'].strip()}")
                     else:
@@ -218,7 +237,6 @@ class NotionStreamableClient:
                 {tool_history}
 
                 Puedes hacer otra llamada de herramienta o responder final si completaste la tarea del usuario.
-                Herramientas disponibles (JSON estructurado): {tool_specs_json}
 
                 Responde SIEMPRE con JSON válido:
                 - {{"type": "tool_call", "tool": "nombre_herramienta", "args": {{...}}}}
@@ -231,7 +249,7 @@ class NotionStreamableClient:
                     messages=self.mensajes
                 )
 
-    async def realizar_peticion(self, httpClient:httpx.AsyncClient, peticion: peticionDto) -> str:
+    async def realizar_peticion(self, httpClient:httpx.AsyncClient, peticion: peticionDto) -> tuple[str,str]:
         response = await httpClient.post(self.endpoint, json=asdict(peticion))
         response.raise_for_status()
         logging.debug(f"Respuesta bruta del modelo: {response.text}")
@@ -270,7 +288,7 @@ class NotionStreamableClient:
         else:
             clean_content = content.strip()
         logging.debug(f"Contenido limpio extraído: {clean_content}")
-        return clean_content
+        return (clean_content,content)
 
 
 async def _safe_response_text(response: httpx.Response | None) -> str:

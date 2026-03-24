@@ -26,7 +26,7 @@ class NotionStreamableClient:
             "Accept": "application/json, text/event-stream"    #Revisar si hay que aceptar mas formatos
         }
         self.client = genai.Client()
-        self.chat = self.client.chats.create(model="gemini-2.5-flash-lite")
+        self.chat = self.client.chats.create(model="gemini-2.5-flash")
 
     @staticmethod
     def _extract_json_payload(raw_text: str) -> dict | None:
@@ -48,6 +48,22 @@ class NotionStreamableClient:
             return parsed if isinstance(parsed, dict) else None
         except json.JSONDecodeError:
             return None
+        
+    @staticmethod
+    def _build_tool_specs(mcp_tools) -> list[dict]:
+        tool_specs = []
+        logging.debug(f"Construyendo especificaciones de herramientas para: {[getattr(tool, 'name', None) for tool in mcp_tools]}")
+        for tool in mcp_tools:
+            tool_specs.append(
+                {
+                    "name": getattr(tool, "name", None),
+                    "title": getattr(tool, "title", None),
+                    "description": getattr(tool, "description", ""),
+                    "inputSchema": getattr(tool, "inputSchema", None) or getattr(tool, "input_schema", None)
+                }
+            )
+        logging.debug(f"Especificaciones de herramientas construidas: {tool_specs}")
+        return tool_specs
 
     async def connect_streamable(self):
         """
@@ -79,10 +95,15 @@ class NotionStreamableClient:
         """
         tool_calls_used = 0
         tool_history = []
+        tool_specs = self._build_tool_specs(mcp_tools)
+        tool_specs_json = json.dumps(tool_specs, ensure_ascii=False)
 
         step_prompt = f"""
         Eres un Notion AI Study Buddy con acceso a herramientas MCP.
-        Herramientas disponibles (usa exactamente estos nombres): {mcp_tools}
+        Cuando el usuario te solicite algo relacionado con notion haz un plan con las herramientas necesarias para cumplir su solicitud.
+        Si recibes un resultado de error de una herramienta revisa el inputSchema y la descripcion de esa herramienta para corregir tu llamado en el próximo intento.
+        Si recibes un error de herramienta no encontrada revisa el nombre correcto en tool_specs y corrige tu llamado en el próximo intento.
+        Herramientas disponibles (JSON estructurado): {tool_specs_json}
 
         Pregunta del usuario: {user_input}
 
@@ -166,8 +187,7 @@ class NotionStreamableClient:
             Historial de herramientas ejecutadas hasta ahora:
             {tool_history}
 
-            Puedes hacer otra llamada de herramienta o responder final.
-            Herramientas disponibles: {mcp_tools}
+            Puedes hacer otra llamada de herramienta o responder final si completaste la tarea del usuario.
 
             Responde SIEMPRE con JSON válido:
             - {{"type": "tool_call", "tool": "nombre_herramienta", "args": {{...}}}}
