@@ -9,4 +9,5 @@ dependencies = [
     "google-genai>=1.68.0",
     "mcp>=1.26.0",
     "python-dotenv>=1.2.2",
+    "python-telegram-bot>=22.7",
 ]

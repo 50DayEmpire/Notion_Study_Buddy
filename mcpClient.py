@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import AsyncExitStack
 import httpx
 from mcp import ClientSession
 import os
@@ -27,6 +28,9 @@ class NotionStreamableClient:
         }
         self.client = genai.Client()
         self.chat = self.client.chats.create(model="gemini-2.5-flash")
+        self._exit_stack: AsyncExitStack | None = None
+        self._session: ClientSession | None = None
+        self._tools = []
 
     @staticmethod
     def _extract_json_payload(raw_text: str) -> dict | None:
@@ -65,31 +69,65 @@ class NotionStreamableClient:
         logging.debug(f"Especificaciones de herramientas construidas: {tool_specs}")
         return tool_specs
 
+    async def connect(self):
+        if self._session is not None:
+            return
+
+        stack = AsyncExitStack()
+        try:
+            http_client = await stack.enter_async_context(
+                httpx.AsyncClient(
+                    headers=self.headers,
+                    timeout=httpx.Timeout(30.0, read=None)
+                )
+            )
+            read_stream, write_stream, _ = await stack.enter_async_context(
+                streamable_http_client(self.serverUrl, http_client=http_client)
+            )
+            session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
+            await session.initialize()
+            response = await session.list_tools()
+            logging.debug(f"Respuesta de list_tools: {response}")
+
+            self._exit_stack = stack
+            self._session = session
+            self._tools = response.tools
+        except Exception:
+            await stack.aclose()
+            raise
+
+    async def close(self):
+        if self._exit_stack is not None:
+            await self._exit_stack.aclose()
+        self._exit_stack = None
+        self._session = None
+        self._tools = []
+
+    async def ask(self, user_input: str) -> str:
+        await self.connect()
+        if self._session is None:
+            return "No se pudo establecer sesión con MCP."
+
+        return await self.process_query(self._session, self._tools, user_input, emit_output=False)
+
     async def connect_streamable(self):
         """
         Conecta al servidor de Notion usando el patrón de Streams (anyio).
         """
-        async with httpx.AsyncClient(
-            headers=self.headers,
-            timeout=httpx.Timeout(30.0, read=None)
-        ) as http_client:
-            # Usa el context manager oficial del SDK para obtener read/write streams.
-            async with streamable_http_client(self.serverUrl, http_client=http_client) as (read_stream, write_stream, _):
-                async with ClientSession(read_stream, write_stream) as session:
-                    await session.initialize()
-                    response = await session.list_tools()
-                    logging.debug(f"Respuesta de list_tools: {response}")
-                    print(f"✅ ¡Conexión Exitosa con Streams!")
-                    tools = response.tools
-                    
-                    # 2. Bucle de interacción con el usuario
-                    while True:
-                        query = input("\nInteractúa con tu Study Buddy (o 'salir'): ")
-                        if query.lower() in ['salir', 'exit', 'quit']: break
+        await self.connect()
+        print(f"✅ ¡Conexión Exitosa con Streams!")
 
-                        await self.process_query(session, tools, query)
+        try:
+            while True:
+                query = input("\nInteractúa con tu Study Buddy (o 'salir'): ")
+                if query.lower() in ['salir', 'exit', 'quit']:
+                    break
 
-    async def process_query(self, session, mcp_tools, user_input):
+                await self.process_query(self._session, self._tools, query, emit_output=True)
+        finally:
+            await self.close()
+
+    async def process_query(self, session, mcp_tools, user_input, emit_output: bool = True):
         """
         Orquesta la comunicación entre Gemini y las herramientas de Notion.
         """
@@ -124,21 +162,27 @@ class NotionStreamableClient:
             logging.debug(f"Payload extraído: {payload}")
 
             if payload is None:
-                print(f"\n🤖 Study Buddy: {raw_text}")
-                return
+                if emit_output:
+                    print(f"\n🤖 Study Buddy: {raw_text}")
+                return raw_text
 
             response_type = payload.get("type")
             if response_type == "final":
                 final_answer = payload.get("answer")
                 if isinstance(final_answer, str) and final_answer.strip():
-                    print(f"\n🤖 Study Buddy: {final_answer.strip()}")
-                    return
-                print("❌ Respuesta final inválida del modelo (falta 'answer').")
-                return
+                    final_text = final_answer.strip()
+                    if emit_output:
+                        print(f"\n🤖 Study Buddy: {final_text}")
+                    return final_text
+                invalid_msg = "Respuesta final inválida del modelo (falta 'answer')."
+                if emit_output:
+                    print(f"❌ {invalid_msg}")
+                return invalid_msg
 
             if response_type != "tool_call":
-                print(f"\n🤖 Study Buddy: {raw_text}")
-                return
+                if emit_output:
+                    print(f"\n🤖 Study Buddy: {raw_text}")
+                return raw_text
 
             if tool_calls_used >= self.MAX_TOOL_CALLS_PER_TURN:
                 force_final_prompt = f"""
@@ -151,10 +195,14 @@ class NotionStreamableClient:
                 final_text = (final_response.text or "").strip()
                 final_payload = self._extract_json_payload(final_text)
                 if final_payload and final_payload.get("type") == "final" and isinstance(final_payload.get("answer"), str):
-                    print(f"\n🤖 Study Buddy: {final_payload['answer'].strip()}")
-                else:
+                    forced_text = final_payload['answer'].strip()
+                    if emit_output:
+                        print(f"\n🤖 Study Buddy: {forced_text}")
+                    return forced_text
+
+                if emit_output:
                     print(f"\n🤖 Study Buddy: {final_text}")
-                return
+                return final_text
 
             tool_name = payload.get("tool")
             tool_args = payload.get("args", {})
@@ -168,7 +216,8 @@ class NotionStreamableClient:
             #     return
 
             try:
-                print(f"🛠️ Usando herramienta ({tool_calls_used + 1}/{self.MAX_TOOL_CALLS_PER_TURN}): {tool_name}...")
+                if emit_output:
+                    print(f"🛠️ Usando herramienta ({tool_calls_used + 1}/{self.MAX_TOOL_CALLS_PER_TURN}): {tool_name}...")
                 result = await session.call_tool(tool_name, tool_args)
                 logging.debug(f"Resultado de la herramienta '{tool_name}': {result.content}")
                 tool_calls_used += 1
@@ -178,8 +227,10 @@ class NotionStreamableClient:
                     "result": str(result.content),
                 })
             except Exception as e:
-                print(f"❌ Error al ejecutar herramienta {tool_name}: {e}")
-                return
+                error_msg = f"Error al ejecutar herramienta {tool_name}: {e}"
+                if emit_output:
+                    print(f"❌ {error_msg}")
+                return error_msg
 
             step_prompt = f"""
             Pregunta original del usuario: {user_input}
@@ -250,6 +301,20 @@ def _extract_unauthorized_from_group(group_error: ExceptionGroup) -> httpx.HTTPS
             if nested is not None:
                 return nested
     return None
+
+
+async def create_authenticated_client() -> NotionStreamableClient:
+    load_dotenv()
+
+    token_path = "client_tokens.json"
+    if not os.path.exists(token_path):
+        print("🔐 No se encontraron tokens guardados. Iniciando flujo de autenticación...")
+        await authFlow()
+
+    tokens = await _load_tokens_from_disk(token_path)
+    server_url = os.getenv("NOTION_MCP_SERVER_URL") or "https://mcp.notion.com/mcp"
+
+    return NotionStreamableClient(tokens["access_token"], server_url)
 
 
 # --- Lógica de ejecución ---
