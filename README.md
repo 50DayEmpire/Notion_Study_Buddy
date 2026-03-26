@@ -12,7 +12,7 @@ An AI-powered Notion assistant that connects a large language model to Notion's 
 - Automatic token refresh and re-auth recovery
 - Two interaction channels: terminal chat and Telegram
 
-## 🛠️ Tech Stack
+## Tech Stack
 
 ### Core & Runtime
 
