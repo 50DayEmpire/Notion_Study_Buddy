@@ -317,6 +317,35 @@ async def create_authenticated_client() -> NotionStreamableClient:
     return NotionStreamableClient(tokens["access_token"], server_url)
 
 
+def is_auth_recoverable_error(error: BaseException) -> bool:
+    if isinstance(error, asyncio.CancelledError):
+        return True
+
+    if isinstance(error, httpx.HTTPStatusError):
+        status_code = error.response.status_code if error.response is not None else None
+        return _is_unauthorized(status_code)
+
+    if isinstance(error, BaseExceptionGroup):
+        return _extract_unauthorized_from_group(error) is not None
+
+    return False
+
+
+async def recover_authenticated_client() -> NotionStreamableClient:
+    load_dotenv()
+
+    token_path = "client_tokens.json"
+    if not os.path.exists(token_path):
+        print("🔐 No se encontraron tokens guardados. Iniciando flujo de autenticación...")
+        await authFlow()
+
+    tokens = await _load_tokens_from_disk(token_path)
+    tokens = await _recover_authentication(tokens, token_path)
+    server_url = os.getenv("NOTION_MCP_SERVER_URL") or "https://mcp.notion.com/mcp"
+
+    return NotionStreamableClient(tokens["access_token"], server_url)
+
+
 # --- Lógica de ejecución ---
 async def run_bot_connection():
     load_dotenv()  # Carga las variables de entorno desde el archivo .env
