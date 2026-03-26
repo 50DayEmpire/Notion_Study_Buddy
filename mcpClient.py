@@ -92,7 +92,7 @@ class NotionStreamableClient:
             self._exit_stack = stack
             self._session = session
             self._tools = response.tools
-        except Exception:
+        except BaseException:
             await stack.aclose()
             raise
 
@@ -290,13 +290,13 @@ async def _recover_authentication(tokens: dict, token_path: str) -> dict:
         raise
 
 
-def _extract_unauthorized_from_group(group_error: ExceptionGroup) -> httpx.HTTPStatusError | None:
+def _extract_unauthorized_from_group(group_error: BaseExceptionGroup) -> httpx.HTTPStatusError | None:
     for sub_error in group_error.exceptions:
         if isinstance(sub_error, httpx.HTTPStatusError):
             status_code = sub_error.response.status_code if sub_error.response is not None else None
             if _is_unauthorized(status_code):
                 return sub_error
-        if isinstance(sub_error, ExceptionGroup):
+        if isinstance(sub_error, BaseExceptionGroup):
             nested = _extract_unauthorized_from_group(sub_error)
             if nested is not None:
                 return nested
@@ -345,7 +345,7 @@ async def run_bot_connection():
         else:
             print(f"❌ Error HTTP al conectar con Streams: {status_code}")
             print(f"Detalle del servidor: {response_text}")
-    except ExceptionGroup as e:
+    except BaseExceptionGroup as e:
         unauthorized_error = _extract_unauthorized_from_group(e)
         if unauthorized_error is not None:
             print("⚠️ Unauthorized detectado dentro de ExceptionGroup. Iniciando recuperación...")
@@ -362,6 +362,11 @@ async def run_bot_connection():
                     print(f"HTTP status: {status_code}")
                     print(f"HTTP body: {response_text}")
                 traceback.print_exception(type(sub_error), sub_error, sub_error.__traceback__)
+    except asyncio.CancelledError:
+        print("⚠️ Conexión cancelada durante initialize. Intentando recuperar autenticación...")
+        tokens = await _recover_authentication(tokens, TOKEN_PATH)
+        retry_client = NotionStreamableClient(tokens["access_token"], serverUrl)
+        await retry_client.connect_streamable()
     except Exception as e:
         print(f"❌ Error al conectar con Streams: {e}")
         traceback.print_exception(type(e), e, e.__traceback__)
