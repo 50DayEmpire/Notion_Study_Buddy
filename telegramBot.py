@@ -60,7 +60,7 @@ async def on_shutdown(app):
     if adapter is not None:
         await adapter.stop()
 
-if __name__ == '__main__':
+def main():
     bot_token = getenv("TELEGRAM_BOT_TOKEN")
     if not bot_token:
         raise RuntimeError("Falta TELEGRAM_BOT_TOKEN en el entorno.")
@@ -78,3 +78,5 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler('start', start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.run_polling()
+
+if __name__ == "__main__":    main()
