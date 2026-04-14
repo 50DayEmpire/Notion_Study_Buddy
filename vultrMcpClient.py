@@ -25,7 +25,7 @@ class peticionDto:
     max_tokens: int = 2048
 
 
-logging.basicConfig(filename="mcp_client.log", filemode='w', format='%(asctime)s - %(levelname)s - %(message)s', level=logging.DEBUG)
+logging.basicConfig(filename="data/mcp_client.log", filemode='w', format='%(asctime)s - %(levelname)s - %(message)s', level=logging.DEBUG)
 
 class NotionStreamableClient:
     MAX_TOOL_CALLS_PER_TURN = 6
@@ -352,7 +352,7 @@ def _extract_unauthorized_from_group(group_error: ExceptionGroup) -> httpx.HTTPS
 # --- Lógica de ejecución ---
 async def run_bot_connection():
     load_dotenv()  # Carga las variables de entorno desde el archivo .env
-    TOKEN_PATH  = "client_tokens.json"
+    TOKEN_PATH  = "data/client_tokens.json"
 
     if not os.path.exists(TOKEN_PATH):
         print("🔐 No se encontraron tokens guardados. Iniciando flujo de autenticación...")

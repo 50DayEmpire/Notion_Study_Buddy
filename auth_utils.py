@@ -183,7 +183,7 @@ async def register_client(metadata: OAuthMetadata, redirect_uri: str) -> ClientC
         return credentials
 
 
-CLIENT_CONFIG_PATH = "client_credentials.json"  
+CLIENT_CONFIG_PATH = "data/client_credentials.json"  
 def save_client_config(credentials: ClientCredentials):
     """
     Guarda el client_id y metadatos del registro dinámico en un archivo local.
@@ -212,9 +212,9 @@ def save_tokens(tokens: TokenResponse):
     Guarda los tokens de acceso y refresco en un archivo local.
     """
     try:
-        with open("client_tokens.json", "w") as f:
+        with open("data/client_tokens.json", "w") as f:
             json.dump(tokens, f, indent=4)
-        print("✅ Tokens guardados en client_tokens.json")
+        print("✅ Tokens guardados en data/client_tokens.json")
     except Exception as e:
         print(f"❌ Error al guardar tokens: {e}")
 

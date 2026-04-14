@@ -12,7 +12,7 @@ import json
 from google import genai
 import logging
 
-logging.basicConfig(filename="mcp_client.log", filemode='w', format='%(asctime)s - %(levelname)s - %(message)s', level=logging.DEBUG)
+logging.basicConfig(filename="data/mcp_client.log", filemode='w', format='%(asctime)s - %(levelname)s - %(message)s', level=logging.DEBUG)
 
 class NotionStreamableClient:
     MAX_TOOL_CALLS_PER_TURN = 6
@@ -306,7 +306,7 @@ def _extract_unauthorized_from_group(group_error: BaseExceptionGroup) -> httpx.H
 async def create_authenticated_client() -> NotionStreamableClient:
     load_dotenv()
 
-    token_path = "client_tokens.json"
+    token_path = "data/client_tokens.json"
     if not os.path.exists(token_path):
         print("🔐 No se encontraron tokens guardados. Iniciando flujo de autenticación...")
         await authFlow()
@@ -334,7 +334,7 @@ def is_auth_recoverable_error(error: BaseException) -> bool:
 async def recover_authenticated_client() -> NotionStreamableClient:
     load_dotenv()
 
-    token_path = "client_tokens.json"
+    token_path = "data/client_tokens.json"
     if not os.path.exists(token_path):
         print("🔐 No se encontraron tokens guardados. Iniciando flujo de autenticación...")
         await authFlow()
@@ -350,7 +350,7 @@ async def recover_authenticated_client() -> NotionStreamableClient:
 async def run_bot_connection():
     load_dotenv()  # Carga las variables de entorno desde el archivo .env
 
-    TOKEN_PATH  = "client_tokens.json"
+    TOKEN_PATH  = "data/client_tokens.json"
 
     if not os.path.exists(TOKEN_PATH):
         print("🔐 No se encontraron tokens guardados. Iniciando flujo de autenticación...")
